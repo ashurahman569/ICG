@@ -1,0 +1,486 @@
+ 
+COMPILER ICG TUTORIAL - PHASE 1 (println multi-expr, no if/else/loops)
+=====================================================================
+Step-by-step solutions for Practices 15, 17, 18, 19, plus how println outputs
+newlines and how compound assignment (a += b) works.
+Each follows the assignment pattern: write a new grammar rule, then generate
+the matching FASM so fasm assembles it and the binary prints the expected output.
+ 
+Remember after EVERY grammar change: run antlr4 to regenerate the parser, then
+rebuild.
+    antlr4 -Dlanguage=Cpp -visitor -no-listener CSubset.g4
+    <compile and run>
+ 
+Files you edit:
+  - Lexer.g4               (tokens)
+  - CSubset.g4             (rules / labeled alternatives)
+  - 2205006_codegen_visitor.h  (visit* methods)
+ 
+==============================================================================
+PRACTICE 15: exponent operator  a ^ b  (base b, exponent b >= 0)
+==============================================================================
+Expected output:
+  16
+  27
+ 
+1) Lexer.g4 - add the '^' token:
+   CARET : '^' { writeIntoLexLogFile("Line# " + std::to_string(getLine()) +
+              ": Token <CARET> Lexeme " + getText()); };
+ 
+2) CSubset.g4 - add a precedence level ABOVE * / %.
+   Your chain is: term (MULOP) -> unary_expression -> factor.
+   Insert power_expression between term and unary_expression, and make term
+   build from powers. Right-associative (2^3^2 = 2^(3^2)).
+ 
+   term
+       : power_expression
+       #TermUnary
+       | term MULOP power_expression
+       #TermBinary
+       ;
+ 
+   power_expression
+       : unary_expression CARET power_expression
+       #PowerBinary
+       | unary_expression
+       #PowerUnary
+       ;
+ 
+3) 2205006_codegen_visitor.h - generate the MUL loop:
+   std::any visitPowerUnary(CSubsetParser::PowerUnaryContext* ctx) override {
+       visitSafe(ctx->unary_expression());
+       return {};
+   }
+ 
+   std::any visitPowerBinary(CSubsetParser::PowerBinaryContext* ctx) override {
+       visitSafe(ctx->unary_expression());     // base -> EAX
+       codegen.gen("PUSH EAX");
+       visitSafe(ctx->power_expression());     // exponent -> EAX
+       codegen.gen("MOV ECX, EAX");            // ECX = exponent
+       codegen.gen("POP  EAX");                // EAX = base
+       codegen.gen("MOV  EBX, EAX");           // EBX = base
+       codegen.gen("MOV  EAX, 1");             // result = 1
+       std::string loop = codegen.newLabel();
+       std::string done = codegen.newLabel();
+       codegen.gen("TEST ECX, ECX");
+       codegen.gen("JZ   " + done);            // exponent 0 -> answer 1
+       codegen.genLabel(loop);
+       codegen.gen("MUL  EBX");                // EAX *= base
+       codegen.gen("DEC  ECX");
+       codegen.gen("JNZ  " + loop);
+       codegen.genLabel(done);
+       return {};
+   }
+ 
+   FASM for 2^4:
+     MOV EAX, 2
+     PUSH EAX
+     MOV EAX, 4
+     MOV ECX, EAX
+     POP  EAX
+     MOV  EBX, EAX
+     MOV  EAX, 1
+     TEST ECX, ECX
+     JZ   L2
+   L1:
+     MUL  EBX          ; 1->2->4->8->16
+     DEC  ECX
+     JNZ  L1
+   L2:
+   -> EAX = 16.  Similarly 3^3 = 27.
+ 
+==============================================================================
+PRACTICE 17: prefix NOT ! before any expression
+==============================================================================
+Expected output:
+  1
+  0
+  0
+ 
+NO GRAMMAR CHANGE NEEDED. Your grammar already parses:
+   !a       -> NOT unary_expression -> factor -> variable
+   !(a==0)  -> NOT unary_expression -> factor -> '(' expression ')'
+   !!a      -> nested NOT unary_expression
+ 
+Your existing UnaryNot codegen already does boolean NOT:
+   CMP EAX, 0
+   JE  Lfalse
+   MOV EAX, 0
+   JMP Lend
+   Lfalse:
+   MOV EAX, 1
+   Lend:
+ 
+With a = 0:
+   !a        -> EAX=0 -> JE Lfalse -> EAX=1        -> 1
+   !(a==0)   -> a==0 gives EAX=1 -> !1 -> EAX=0    -> 0
+   !!a       -> !0 = 1, then !1 = 0                -> 0
+ 
+So Practice 17 is already solved - just regenerate and verify the printed
+values 1, 0, 0.
+ 
+==============================================================================
+PRACTICE 18: comma-separated assignments  a = 1, b = 2, c = 3;
+==============================================================================
+Expected output:
+  1
+  2
+  3
+ 
+1) CSubset.g4 - add a statement alternative + a list rule:
+ 
+   statement
+       : ...
+       | expression_list SEMICOLON
+       #StatementExprList
+       | ...
+       ;
+ 
+   expression_list
+       : expression_list COMMA expression
+       #ExprListMulti
+       | expression
+       #ExprListSingle
+       ;
+ 
+2) 2205006_codegen_visitor.h:
+   std::any visitStatementExprList(CSubsetParser::StatementExprListContext* ctx) override {
+       genLine(ctx);
+       visitSafe(ctx->expression_list());
+       return {};
+   }
+   std::any visitExprListSingle(CSubsetParser::ExprListSingleContext* ctx) override {
+       visitSafe(ctx->expression());
+       return {};
+   }
+   std::any visitExprListMulti(CSubsetParser::ExprListMultiContext* ctx) override {
+       visitSafe(ctx->expression_list());
+       visitSafe(ctx->expression());
+       return {};
+   }
+ 
+   Each expression is an assignment, so it stores left-to-right:
+     MOV EAX, 1
+     MOV [a], EAX
+     MOV EAX, 2
+     MOV [b], EAX
+     MOV EAX, 3
+     MOV [c], EAX
+   -> println(a,b,c) prints 1 2 3.
+ 
+==============================================================================
+PRACTICE 19: abs(x) keyword
+==============================================================================
+Expected output:
+  7
+  3
+  0
+ 
+1) Lexer.g4 - add the keyword BEFORE the ID rule (otherwise 'abs' becomes an
+   identifier). Put it with the other keywords:
+   ABS : 'abs' { writeIntoLexLogFile("Line# " + std::to_string(getLine()) +
+              ": Token <ABS> Lexeme " + getText()); };
+ 
+2) CSubset.g4 - add a factor alternative:
+   factor
+       : ...
+       | ABS LPAREN expression RPAREN
+       #FactorAbs
+       | ...
+       ;
+ 
+3) 2205006_codegen_visitor.h:
+   std::any visitFactorAbs(CSubsetParser::FactorAbsContext* ctx) override {
+       visitSafe(ctx->expression());            // arg -> EAX
+       std::string end = codegen.newLabel();
+       codegen.gen("CMP EAX, 0");
+       codegen.gen("JGE " + end);               // if >= 0, skip negate
+       codegen.gen("NEG EAX");
+       codegen.genLabel(end);
+       return {};
+   }
+ 
+   FASM for abs(a) with a = -7:
+     MOV EAX, [a]      ; -7
+     CMP EAX, 0
+     JGE L1            ; not taken (negative)
+     NEG EAX           ; 7
+   L1:
+   Memory a is NOT changed (only EAX). Outputs 7, 3, 0.
+ 
+==============================================================================
+HOW YOUR println WORKS (AND WHERE THE NEWLINE COMES FROM)
+==============================================================================
+There is NO separate "println" function and the compiler emits no newline
+instruction. Each expression argument becomes:
+ 
+   <compute expr into EAX>
+   CALL print_number
+ 
+and print_number in printProc.lib writes the digits PLUS a trailing newline.
+ 
+Inside print_number:
+   sub esp, 32          ; 32-byte local buffer
+   ...
+.positive:
+   mov ebx, 10
+   lea esi, [esp + 31]
+   mov byte [esi], 10     <-- newline byte (LF) stored at end of buffer
+   dec esi
+.convert:                 ; digits are written before it
+   ...
+   int 0x80               ; sys_write -> "digits\n"
+ 
+So println(a, b) prints:
+   5
+   7
+ 
+Every CALL print_number ends its own line. That is why Practice 16 (print
+without newline) needs a SECOND routine with the "mov byte [esi], 10" line
+removed.
+ 
+==============================================================================
+COMPOUND ASSIGNMENT  a += b  etc.   (your current implementation)
+==============================================================================
+Implementing a += b means: load old a, compute a OP b, store back to a.
+ALL five operators share the same shape; only the middle arithmetic differs.
+ 
+1) Lexer.g4 - the token (already in your code):
+   COMPOP : '+=' | '-=' | '*=' | '/=' | '%=' ;
+ 
+2) CSubset.g4 - the rule (already in your code):
+   expression
+       : logic_expression
+       #ExpressionLogic
+       | variable ASSIGNOP expression
+       #ExpressionAssign
+       | variable COMPOP expression
+       #ExpressionComp
+       ;
+ 
+3) 2205006_codegen_visitor.h - the shape (already in your code):
+   std::any visitExpressionComp(CSubsetParser::ExpressionCompContext* ctx) override {
+       auto *vs = dynamic_cast<CSubsetParser::VarSimpleContext*>(ctx->variable());
+       std::string op = ctx->COMPOP()->getText();
+       if(vs){
+           genLoad(vs->ID()->getText());      // EAX = old value of target
+           codegen.gen("PUSH EAX");
+           visitSafe(ctx->expression());      // RHS -> EAX
+           codegen.gen("POP  EBX");           // EBX = old value
+           // now apply (old OP rhs): EBX OP EAX -> EAX
+           if(op=="+=")      codegen.gen("ADD EAX,EBX");
+           else if(op=="-="){ codegen.gen("SUB EBX,EAX");
+                              codegen.gen("MOV EAX,EBX"); }
+           else if(op=="*=") codegen.gen("MUL EBX");
+           else if(op=="/="){ codegen.gen("XCHG EAX,EBX");
+                              codegen.gen("XOR EDX,EDX");
+                              codegen.gen("DIV EBX"); }
+           else if(op=="%="){ codegen.gen("XCHG EAX,EBX");
+                              codegen.gen("XOR EDX,EDX");
+                              codegen.gen("DIV EBX");
+                              codegen.gen("MOV EAX,EDX"); }
+           genStore(vs->ID()->getText());    // result -> memory
+       }
+       return {};
+   }
+ 
+   FASM for  a += b :
+     MOV EAX, [a]      ; old a
+     PUSH EAX
+     MOV EAX, [b]      ; rhs
+     POP  EBX
+     ADD  EAX, EBX     ; a + b
+     MOV [a], EAX      ; store back
+ 
+   Register notes:
+   - genLoad puts target in EAX; we save it to the stack so the RHS
+     evaluation (also into EAX) does not lose it.
+   - POP EBX restores old value into EBX.
+   - For + and * it is commutative, so ADD/MUL directly is fine.
+   - For - and / and %, use XCHG so "old OP rhs" = EAX/EBX order is correct,
+     then DIV gives quotient in EAX and remainder in EDX.
+ 
+==============================================================================
+PRACTICE 20: PREFIX  ++a / --a
+==============================================================================
+Expected output:
+  6
+  6
+  5
+  5
+ 
+Prefix modifies memory FIRST, then loads the NEW value into EAX:
+( postfix a++: load OLD into EAX -> increment memory -> EAX stays OLD )
+ 
+1) CSubset.g4 - add factor alternatives:
+   factor
+       : ...
+       | INCOP variable
+       #FactorPreIncr
+       | DECOP variable
+       #FactorPreDecr
+       | variable INCOP
+       #FactorIncr
+       | variable DECOP
+       #FactorDecr
+       ;
+   (INCOP/DECOP already exist in the lexer.)
+ 
+2) 2205006_codegen_visitor.h:
+   std::any visitFactorPreIncr(CSubsetParser::FactorPreIncrContext* ctx) override {
+       auto* vs = dynamic_cast<CSubsetParser::VarSimpleContext*>(ctx->variable());
+       if(vs){
+           std::string name = vs->ID()->getText();
+           genLoad(name);               // EAX = old
+           codegen.gen("MOV EBX, EAX");
+           codegen.gen("ADD EBX, 1");   // EBX = new
+           genStore(name);              // memory = new (uses EBX? genStore uses EAX)
+           ...
+       }
+   }
+ 
+   NOTE: genStore writes EAX, not EBX. So copy EBX back to EAX first:
+   std::any visitFactorPreIncr(CSubsetParser::FactorPreIncrContext* ctx) override {
+       auto* vs = dynamic_cast<CSubsetParser::VarSimpleContext*>(ctx->variable());
+       if(vs){
+           std::string name = vs->ID()->getText();
+           genLoad(name);
+           codegen.gen("MOV EBX, EAX");
+           codegen.gen("ADD EBX, 1");    // or SUB EBX,1 for --
+           codegen.gen("MOV EAX, EBX");  // EAX = new value (prefix semantics)
+           genStore(name);               // store new to memory
+       }
+       return {};
+   }
+ 
+   FASM for  b = ++a :
+     MOV EAX, [a]      ; old a
+     MOV EBX, EAX
+     ADD EBX, 1        ; new
+     MOV EAX, EBX      ; value of ++a  (this line is the difference vs postfix)
+     MOV [a], EAX      ; store new
+     MOV [b], EAX      ; b = new
+   -> prints 6 6.
+ 
+   FASM for  b = --a :
+     ... SUB EBX, 1 ... MOV EAX, EBX ... store ...
+   -> prints 5 5.
+ 
+==============================================================================
+PRACTICE 21: println() with ZERO arguments
+==============================================================================
+Expected output:
+  (blank line)
+  9
+ 
+1) CSubset.g4 - allow an empty argument list:
+   println_arg_list
+       : println_arg_list COMMA logic_expression
+       #PrintlnArgsMulti
+       | logic_expression
+       #PrintlnArgsSingle
+       |
+       #PrintlnArgsEmpty
+       ;
+ 
+2) CSubset.g4 statement stays the same (PRINTLN LPAREN println_arg_list RPAREN
+   SEMICOLON). The empty alternative now matches println();.
+ 
+3) 2205006_codegen_visitor.h - emit a newline-only write:
+   std::any visitPrintlnArgsEmpty(CSubsetParser::PrintlnArgsEmptyContext* ctx) override {
+       // write a single newline byte via sys_write
+       codegen.gen("PUSH DWORD 10");     // or PUSH 10 (4 bytes)
+       codegen.gen("MOV  EAX, 4");       // sys_write
+       codegen.gen("MOV  EBX, 1");       // stdout
+       codegen.gen("MOV  ECX, ESP");
+       codegen.gen("MOV  EDX, 1");       // one byte
+       codegen.gen("INT  0x80");
+       codegen.gen("ADD  ESP, 4");       // clean up
+       return {};
+   }
+ 
+   FASM for println();:
+     PUSH DWORD 10
+     MOV  EAX, 4
+     MOV  EBX, 1
+     MOV  ECX, ESP
+     MOV  EDX, 1
+     INT  0x80
+     ADD  ESP, 4
+   -> prints one blank line. Then println(a) prints 9.
+ 
+==============================================================================
+PRACTICE 22: SHIFT OPERATORS  <<  >>
+==============================================================================
+Expected output:
+  16
+  2
+  1024
+ 
+1) Lexer.g4 - add tokens (before RELOP is safe; maximal munch already prefers
+   the 2-char token over '<' / '>'):
+   LSHIFT : '<<' {...};
+   RSHIFT : '>>' {...};
+ 
+   CSubset.g4 - insert a shift level between simple_expression and term:
+   simple_expression
+       : shift_expression
+       #SimpleTerm
+       | simple_expression ADDOP shift_expression
+       #SimpleBinary
+       ;
+ 
+   shift_expression
+       : shift_expression SHIFTOP term
+       #ShiftBinary
+       | term
+       #ShiftTerm
+       ;
+ 
+   (Also add new parser alternatives/labels for shift_expression and visit them,
+   mirroring how term/simple_expression are wired.)
+ 
+2) 2205006_codegen_visitor.h - the shift count must end up in CL:
+   std::any visitShiftTerm(...) {
+       visitSafe(ctx->term());
+       return {};
+   }
+   std::any visitShiftBinary(CSubsetParser::ShiftBinaryContext* ctx) override {
+       visitSafe(ctx->shift_expression());  // left -> EAX
+       codegen.gen("PUSH EAX");
+       visitSafe(ctx->term());              // right -> EAX (count)
+       codegen.gen("MOV ECX, EAX");         // count must be in CL
+       codegen.gen("POP  EAX");             // left value back to EAX
+       if(ctx->SHIFTOP()->getText() == "<<"){
+           codegen.gen("SAL EAX, CL");      // signed left shift
+       }else{
+           codegen.gen("SAR EAX, CL");      // signed right shift (or SHR for unsigned)
+       }
+       return {};
+   }
+ 
+FASM for a << b (a=1, b=4):
+     MOV EAX, [a]     ; 1
+     PUSH EAX
+     MOV EAX, [b]     ; 4
+     MOV ECX, EAX
+     POP  EAX
+     SAL  EAX, CL     ; 1 << 4 = 16
+   -> 16.
+ 
+   32 >> b with b=4: 32>>4 = 2.  a << 10 with a=1: 1<<10 = 1024.
+   -> matches the sample: 16, 2, 1024.
+ 
+==============================================================================
+COMMON PITFALLS
+==============================================================================
+- After editing ANY .g4 you MUST regenerate the parser, or you get compile
+  errors like "has no member" / "not declared".
+- Keywords (ABS, CARET is an operator not a keyword) must be defined before the
+  ID rule in Lexer.g4, or identifiers will swallow them.
+- codegen.newLabel() gives fresh labels each call - use it for every new branch
+  so nested rules never collide.
+- genStore writes [mem], EAX and does NOT clobber EAX, so the computed value
+  survives for chained/compound assignments.
+- Each of these still uses ONLY Phase-1 features: variables, println, arithmetic/
+  relational/logical/unary/postfix/assignment expressions. No if/else, no loops.
