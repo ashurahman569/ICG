@@ -1,0 +1,40 @@
+QUESTION : '?';
+COLON    : ':';
+
+expression
+    : logic_expression
+    | variable ASSIGNOP expression
+    | logic_expression QUESTION expression COLON expression    #TernaryExpression
+    ;
+
+
+// Add to Visitor.h:
+any visitTernaryExpression(CSubsetParser::TernaryExpressionContext *ctx) override;
+
+// Add to Visitor.cpp:
+any Visitor::visitTernaryExpression(CSubsetParser::TernaryExpressionContext *ctx) {
+    string labelFalse = newLabel();
+    string labelEnd = newLabel();
+
+    // 1. Evaluate the condition (logic_expression)
+    visit(ctx->logic_expression());
+    
+    // 2. Check if condition is false (0)
+    emit("TEST EAX, EAX");
+    emit("JE " + labelFalse); // Jump to false branch if EAX == 0
+
+    // 3. Evaluate true branch (first expression after '?')
+    visit(ctx->expression(0));
+    emit("JMP " + labelEnd);  // Skip the false branch
+
+    // 4. Evaluate false branch (expression after ':')
+    emitLabel(labelFalse);
+    visit(ctx->expression(1));
+
+    // 5. End of ternary
+    emitLabel(labelEnd);
+    
+    // The result of whichever branch was taken is now sitting in EAX, 
+    // ready to be used by an assignment or print statement.
+    return nullptr;
+}
