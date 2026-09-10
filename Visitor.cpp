@@ -164,13 +164,13 @@ any Visitor::visitFuncDef(CSubsetParser::FuncDefContext *ctx) {
 any Visitor::visitFuncDecWithParam(CSubsetParser::FuncDecWithParamContext *ctx) { 
     string name = ctx->ID()->getText();
     string type = safeCastString(visit(ctx->type_specifier()));
-    symbolTable.InsertParent(name, "ID", type, true, true, false);
+    symbolTable.Insert(name, "ID", type, true, true, false);
     return nullptr;
 }
 any Visitor::visitFuncDecNoParam(CSubsetParser::FuncDecNoParamContext *ctx) { 
     string name = ctx->ID()->getText();
     string type = safeCastString(visit(ctx->type_specifier()));
-    symbolTable.InsertParent(name, "ID", type, true, true, false);
+    symbolTable.Insert(name, "ID", type, true, true, false);
     return nullptr;
 }
 
@@ -735,14 +735,14 @@ any Visitor::visitVariableIncrement(CSubsetParser::VariableIncrementContext *ctx
         emit("MOV EBX, EAX");
         if (isGlobal(name)) {
             emit("MOV EAX, [" + name + " + EBX]");
-            emit("MOV EBX, EAX");
-            emit("ADD EBX, 1");
-            emit("MOV [" + name + " + EBX], EBX");
+            emit("MOV ECX, EAX");
+            emit("ADD ECX, 1");
+            emit("MOV [" + name + " + EBX], ECX");
         } else {
             emit("MOV EAX, [EBP + " + to_string(offset) + " + EBX]");
-            emit("MOV EBX, EAX");
-            emit("ADD EBX, 1");
-            emit("MOV [EBP + " + to_string(offset) + " + EBX], EBX");
+            emit("MOV ECX, EAX");
+            emit("ADD ECX, 1");
+            emit("MOV [EBP + " + to_string(offset) + " + EBX], ECX");
         }
     }
     return nullptr;
@@ -766,14 +766,14 @@ any Visitor::visitVariableDecrement(CSubsetParser::VariableDecrementContext *ctx
         emit("MOV EBX, EAX");
         if (isGlobal(name)) {
             emit("MOV EAX, [" + name + " + EBX]");
-            emit("MOV EBX, EAX");
-            emit("SUB EBX, 1");
-            emit("MOV [" + name + " + EBX], EBX");
+            emit("MOV ECX, EAX");
+            emit("SUB ECX, 1");
+            emit("MOV [" + name + " + EBX], ECX");
         } else {
             emit("MOV EAX, [EBP + " + to_string(offset) + " + EBX]");
-            emit("MOV EBX, EAX");
-            emit("SUB EBX, 1");
-            emit("MOV [EBP + " + to_string(offset) + " + EBX], EBX");
+            emit("MOV ECX, EAX");
+            emit("SUB ECX, 1");
+            emit("MOV [EBP + " + to_string(offset) + " + EBX], ECX");
         }
     }
     return nullptr;
